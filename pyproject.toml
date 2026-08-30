@@ -1,0 +1,17 @@
+[project]
+name = "job-source-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+# Installs this repo as a real package (editable), so `from job_source_agent...`
+# works from any file or folder instead of relying on relative paths.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatchling looks for packages at the repo root by default; ours live under src/.
+[tool.hatch.build.targets.wheel]
+packages = ["src/job_source_agent"]
