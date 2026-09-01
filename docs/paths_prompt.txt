@@ -1,0 +1,34 @@
+Below is some data that I have been collecting. Every path that was taken started from the Linkedin job posting which I would then click on the Linkedin profile, from the profile we went to the about section and there was always a link to the company website in the about section. For the most part everything was very similar when it came to finding the "careers" link. At times you would have to search for job openings to see the range of available jobs, others the link itself would take you straight there, but most of the times its the former. Another thing I notices is that the careers tab can for the most part always be found at the bottom of the page. Often times I do get the cookies notification incase that is another issue that we need to address.
+
+
+ametek -> contact us link -> "How can I become a part of the AMETEK team?" -> link -> search job link -> https://jobs.ametek.com/search/?createNewAlert=false&q=&optionsFacetsDD_location=&optionsFacetsDD_country=&optionsFacetsDD_department=&optionsFacetsDD_customfield2=&optionsFacetsDD_customfield1=&optionsFacetsDD_shifttype=
+
+MLK Comm. Healthcare -> careers link -> see all open link -> https://cta.cadienttalent.com/index.jsp?seq=ca_home&applicationName=MartinLutherKingJrCommunityHospitalReqExt&locale=en_US
+
+synopsys -> tab "why synopsys" -> careers link -> find your career link -> https://careers.synopsys.com/search-jobs
+
+honeywell aerospace -> Company tab -> careers link -> explore open jobs -> https://icfcjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Aerospace/jobs
+
+carmax -> more tab -> search jobs at carmax link -> search all jobs link -> https://careers.carmax.com/jobs
+
+international paper -> careers link -> search jobs today link -> https://www.internationalpaper.com/working-ip
+
+esri -> about tab -> careers link -> search jobs link -> https://iazbqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+
+riverside unified school district -> jobs link -> View all open listings at link -> https://www.edjoin.org/riversideusd
+
+TRL11 -> careers link -> https://www.trl11.com/careers
+
+keurig dr pepper -> careers tab -> search jobs link -> https://careers.keurigdrpepper.com/en/search-jobs?acm=ALL&alrpm=ALL&ascf=[%7B%22key%22:%22ALL%22,%22value%22:%22%22%7D]&country=United%20States
+
+Reyes beverage group -> careers link -> Explore all # jobs link -> https://jobportal.reyesholdings.com/rbg/jobs?page=1
+
+gopuff -> careers link -> search open roles link (directed to the bottom of the page) -> https://www.gopuff.com/go/careers
+
+city of redlands -> careers link -> Click HERE to view current job opportunities link -> https://www.governmentjobs.com/careers/redlands
+
+rebel hotel company -> careers link -> explore opportunities link -> search for jobs link -> https://www2.appone.com/Search/Search.aspx?ServerVar=rebelhospitalitynewyorkllc.appone.com
+
+iehp -> careers link -> search button link -> https://careers.iehp.org/search-jobs
+
+crowe -> careers tab -> search careers link -> search openings link -> https://careers.crowe.com/search-results
