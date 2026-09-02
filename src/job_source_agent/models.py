@@ -25,6 +25,7 @@ class Hop:
 
     url: str
     reason: str  # why the navigator followed this link
+    score: int = 0  # what arrival.py made of the page once it loaded
 
 
 @dataclass

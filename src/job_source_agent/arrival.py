@@ -168,6 +168,8 @@ MAX_SCORE = sum(signal.points for signal in SIGNALS)
 
 ARRIVED_SCORE = 20
 
+CONFIDENT_SCORE = 46
+
 EVIDENCE_LIMIT = 6
 
 

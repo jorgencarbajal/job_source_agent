@@ -58,6 +58,27 @@ That split is the whole design.
 - Measured across all 40 cached pages: 20/20 listings pages clear the arrival score, 1/20 homepages do, and no company's homepage outscores its own board. The score is a comparator within one company rather than a global classifier, which is why the loop keeps the best page it saw instead of stopping at a threshold.
 - Run as a standalone file to see the full breakdown for any page. `--cached PATH` scores a page already saved by `dump_pages.py` (free and instant, give it the `.json`), and `--quiet` prints just the score and reason without the signal table.
 
+## src/job_source_agent/llm.py
+
+- Picks which link to click next. The only file in stage 2 that costs money.
+- Two passes. A free ranker scores every link on careers wording, address, and whether it sits in the nav or footer, then the top 30 go to Haiku, which picks one and says why.
+- The ranker exists because homepages carry 100-800 links and sending them all would be slow and noisy. Measured against all 20 homepages, the top 30 always still contains a careers link, so the shortlist never loses the trail.
+- The model exists because the ranker produces ties it cannot break. Honeywell's homepage has five links tied at the same score and the right answer sits sixth, in the footer. The model picked the right one.
+- The model answers with a number from the list, not a URL. A bad number fails a range check; a made-up URL would send the browser somewhere that does not exist.
+- If the API call fails it returns the top-ranked link instead and records why, so a network problem costs one worse hop rather than the whole run.
+- Run it standalone to see the ranking for any page. `--cached PATH` uses a saved page, `--all` shows every scoring link, and `--choose` also calls the model — that last one is the only part that costs anything.
+
+## src/job_source_agent/navigator.py
+
+- The loop that ties stage 2 together: render a page, score it, pick a link, repeat. Up to 5 pages.
+- It holds no judgment of its own. `browser.py` renders, `arrival.py` scores, `llm.py` chooses. This file only decides when to stop and which page to keep.
+- Keeps the best page it saw rather than stopping at the first decent one, because scores only compare within a single company.
+- Stops early only at a score of 46 or above, where a page is unmistakably a job board. Below that it spends the full budget and lets best-so-far decide, which is slower but never wrong.
+- At a dead end — a page that will not load, or one with nothing worth following — it backs up and takes the next-best link from the page before it. Human paths take 1 to 3 hops and the budget is 5, so that spare capacity was already there.
+- Renders a page a second time if it shows no sign of jobs at all, once per walk. That is the Esri case, where a page loaded correctly but its jobs never arrived and nothing looked wrong.
+- Returns a `Walk`: the best URL, its score, every hop with the reason for it, and an outcome saying whether the result is certain, likely, or nothing.
+- Run it standalone against any company website. `--max-hops N` changes the budget, `--quiet` prints just the answer. Each hop is one model call, a fraction of a cent.
+
 ## benchmark/dump_pages.py
 
 - Renders all 40 ground-truth pages once and caches them to disk, so the signal work can be done against real pages without waiting on a browser every time. Each CSV row contributes its `listings_url` as a positive example and its `website` as a negative one.
