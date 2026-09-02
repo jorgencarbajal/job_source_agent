@@ -20,14 +20,18 @@ know, skipping the first:
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from job_source_agent.config import (
+    SCRAPINGDOG_ATTEMPTS,
+    SCRAPINGDOG_BACKOFF,
     SCRAPINGDOG_JOB_URL,
     SCRAPINGDOG_PROFILE_URL,
+    SCRAPINGDOG_RETRY_STATUS,
     SCRAPINGDOG_TIMEOUT,
     require_scrapingdog_key,
 )
@@ -81,22 +85,56 @@ def _unwrap(payload: Any) -> dict:
     return payload
 
 ###
+def _wait_for(attempt: int, retry_after: str | None) -> float:
+    """Work out how long to wait before trying a rejected call again. Returns
+    the server's own `Retry-After` value when it sent one, and otherwise a delay
+    that doubles each attempt, so a burst backs off instead of hammering."""
+    if retry_after:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return SCRAPINGDOG_BACKOFF * (2**attempt)
+
+
 def _get(client: httpx.Client, url: str, params: dict) -> dict:
     """
     GET request the the profile URL. Unwrap scraping dogs list response, return the dict.
+
+    Retries on 429 and on server errors, waiting longer each time. ScrapingDog
+    rejects calls made too close together even when only two URLs are in flight,
+    and a rejected call is a temporary condition rather than a failed lookup.
     """
-    try:
-        response = client.get(url, params=params)
-    except httpx.HTTPError as exc:
-        raise LinkedInError(f"request to {url} failed: {exc}") from exc
-    if response.status_code != 200:
-        raise LinkedInError(
-            f"{url} returned {response.status_code}: {response.text[:200]}"
-        )
-    try:
-        return _unwrap(response.json())
-    except ValueError as exc:
-        raise LinkedInError(f"{url} did not return JSON: {response.text[:200]}") from exc
+    last: str = "no attempt was made"
+
+    for attempt in range(SCRAPINGDOG_ATTEMPTS):
+        try:
+            response = client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            last = f"request to {url} failed: {exc}"
+            if attempt == SCRAPINGDOG_ATTEMPTS - 1:
+                raise LinkedInError(last) from exc
+            time.sleep(_wait_for(attempt, None))
+            continue
+
+        if response.status_code == 200:
+            try:
+                return _unwrap(response.json())
+            except ValueError as exc:
+                raise LinkedInError(
+                    f"{url} did not return JSON: {response.text[:200]}"
+                ) from exc
+
+        last = f"{url} returned {response.status_code}: {response.text[:200]}"
+        if (
+            response.status_code in SCRAPINGDOG_RETRY_STATUS
+            and attempt < SCRAPINGDOG_ATTEMPTS - 1
+        ):
+            time.sleep(_wait_for(attempt, response.headers.get("retry-after")))
+            continue
+        raise LinkedInError(last)
+
+    raise LinkedInError(last)
 
 ###
 def fetch_job(job_id: str, *, client: httpx.Client | None = None) -> dict:

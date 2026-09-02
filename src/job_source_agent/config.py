@@ -21,6 +21,15 @@ SCRAPINGDOG_PROFILE_URL = "https://api.scrapingdog.com/linkedin"
 
 SCRAPINGDOG_TIMEOUT = 60.0
 
+# Measured, not documented: two calls fired back to back came back 429 "Too many
+# requests" even with only two URLs in flight. The limit is on request rate, not
+# on concurrency, so stage 1 both waits between retries and caps how many URLs
+# may be looking themselves up at once.
+SCRAPINGDOG_ATTEMPTS = 4
+SCRAPINGDOG_BACKOFF = 2.0
+SCRAPINGDOG_CONCURRENCY = 2
+SCRAPINGDOG_RETRY_STATUS = (429, 500, 502, 503, 504)
+
 
 BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "1") != "0"
 PAGE_TIMEOUT = 30.0
