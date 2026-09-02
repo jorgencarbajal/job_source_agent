@@ -106,3 +106,6 @@ tmp/
 # ---- Docs builds ----
 docs/_build/
 site/
+
+# ---- Benchmark page cache (regenerable via benchmark/dump_pages.py) ----
+benchmark/pages/
