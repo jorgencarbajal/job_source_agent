@@ -2,6 +2,13 @@
 
 What each file does and why it exists. In roughly the order the data moves.
 
+The path: a LinkedIn job URL goes to `linkedin.py`, which returns the company
+and its website. `navigator.py` then walks that website, using `browser.py` to
+render each page, `arrival.py` to score it, and `llm.py` to choose the next
+link. `pipeline.py` joins the two halves and `api.py` puts them on the web.
+
+The `benchmark/` files exist to make that measurable rather than hopeful.
+
 ## Signals
 
 The eight things `arrival.py` looks at to decide if a page is a list of open
@@ -103,9 +110,13 @@ careers page with no jobs on it. It scores full marks on Tier 2 and zero on Tier
 
 ## src/job_source_agent/api.py
 
-- Not built yet. The FastAPI demo Jobnova uses to test their own links.
-- Accepts up to 10 URLs, runs them 4 at a time, streams each result as it lands.
-- Shows the hops, not just the answer — a visible trail is the difference between a result and a demonstration.
+- The public demo. Paste up to 10 LinkedIn job URLs, get each company's job board back.
+- Results stream as NDJSON, one JSON object per line. Ten URLs takes around 100 seconds and a page blank that long reads as broken; `run_many` already yields each result on arrival, so the endpoint just forwards them.
+- Every row shows the company, the website stage 1 found, the answer as a link, and a collapsible hop trail with each score and the model's own sentence. The trail is the point -- it is what makes it a demonstration of an agent rather than a box that emits a URL.
+- The page is one self-contained HTML string inside the module. No build step, no static files, no framework.
+- A daily credit cap stops the demo spending without limit, since anyone can reach it. Credits are reserved before work starts, so a run cannot begin and then be cut off. The counter lives in memory and resets on restart, which is fine for one instance and wrong for several.
+- Bad input is refused before anything is spent: no valid URLs, more than the limit, or the day's budget gone.
+- Run with `uv run uvicorn job_source_agent.api:app`. Do not add `--reload` on Windows -- it switches uvicorn to an event loop that cannot spawn subprocesses, and Playwright's driver is a subprocess.
 
 ## benchmark/ground_truth.csv
 

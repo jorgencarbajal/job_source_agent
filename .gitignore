@@ -1,6 +1,10 @@
 CLAUDE.md
 benchmark/dump.csv
 benchmark/results_stage2.csv
+benchmark/ground_truth.csv
+
+# ---- Benchmark page cache (regenerable via benchmark/dump_pages.py) ----
+benchmark/pages/
 
 # ---- Python ----
 __pycache__/
@@ -109,5 +113,4 @@ tmp/
 docs/_build/
 site/
 
-# ---- Benchmark page cache (regenerable via benchmark/dump_pages.py) ----
-benchmark/pages/
+
