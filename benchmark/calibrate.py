@@ -46,98 +46,31 @@ import json
 import re
 import statistics
 from dataclasses import dataclass, field
-from html import unescape
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from job_source_agent.arrival import (
+    ATS_HOST_RE,
+    JOB_HREF_RE,
+    LOCATION_RE,
+    REMOTE_RE,
+    RESULT_COUNT_RE,
+    TITLE_KEYWORD_RE,
+    TITLE_NOUN_RE,
+    URL_KEYWORD_RE,
+    visible_text,
+)
 
 BENCHMARK_DIR = Path(__file__).resolve().parent
 DEFAULT_PAGES_DIR = BENCHMARK_DIR / "pages"
 
 KINDS = ("positive", "negative")
 
-COUNT_NOUNS = (
-    r"(?:jobs?|positions?|openings?|opportunit(?:y|ies)|vacanc(?:y|ies)"
-    r"|roles?|results?)"
+PAGINATION_HREF_RE = re.compile(
+    r"(?:[?&](?:page|pg|p|from|startrow)=|/page/)", re.IGNORECASE
 )
-
-RESULT_COUNT_RE = re.compile(
-    r"(?:"
-    r"\b\d[\d,]*\s*(?:\+\s*)?"
-    r"(?:open\s+|available\s+|current\s+|matching\s+|total\s+)?"
-    + COUNT_NOUNS + r"\b"
-    r"|"
-    r"\b" + COUNT_NOUNS + r"\s*\(\s*\d[\d,]*\s*\)"
-    r")",
-    re.IGNORECASE,
-)
-
-JOB_HREF_RE = re.compile(
-    r"(?:/job/|/jobs/|/job-|jobdetail|job_detail|job-detail|/requisition"
-    r"|/posting|viewjob|jobid=|job_id=|/opportunity/|/vacancy/|/apply/)",
-    re.IGNORECASE,
-)
-
-TITLE_NOUN_RE = re.compile(
-    r"\b(?:"
-    r"engineer|manager|analyst|specialist|director|technician|nurse"
-    r"|associate|representative|intern|internship|coordinator|supervisor"
-    r"|assistant|developer|designer|accountant|attorney|consultant|architect"
-    r"|scientist|operator|driver|clerk|teacher|officer|administrator"
-    r"|president|lead|agent|advisor|adviser|counselor|therapist|mechanic"
-    r"|welder|planner|buyer|recruiter|controller|auditor|paralegal|cashier"
-    r"|server|technologist"
-    r"|worker|handler|laborer|labourer|assembler|machinist|fabricator"
-    r"|custodian|janitor|packer|picker|loader|forklift|warehouse|stocker"
-    r"|cook|chef|baker|housekeeper|attendant|aide|orderly|caregiver"
-    r"|dispatcher|installer|inspector|maintenance|millwright|electrician"
-    r"|plumber|carpenter|painter|roofer|foreman|crew|apprentice|trainee"
-    r"|technician|machine|press|forklift|shift"
-    r"|physician|surgeon|pharmacist|therapist|technician|hygienist|dentist"
-    r"|paramedic|phlebotomist|radiologist|sonographer|dietitian|counsellor"
-    r"|teller|underwriter|actuary|broker|adjuster|appraiser|bookkeeper"
-    r"|analyst|strategist|marketer|copywriter|editor|writer|producer"
-    r"|photographer|videographer|animator|illustrator"
-    r"|scheduler|dispatcher|expeditor|estimator|surveyor|drafter|draftsman"
-    r"|programmer|tester|sre|devops|administrator|dba|statistician"
-    r"|principal|superintendent|counselor|librarian|instructor|professor"
-    r"|tutor|paraeducator|substitute|coach|trainer|facilitator"
-    r"|guard|deputy|dispatcher|firefighter|ranger|inspector"
-    r"|bartender|barista|host|hostess|waiter|waitress|concierge|valet"
-    r"|stylist|barber|esthetician|groomer"
-    r"|pilot|conductor|courier|deliverer|chauffeur|trucker"
-    r"|vp|chief|head|partner|fellow|apprentice|volunteer"
-    r")\b",
-    re.IGNORECASE,
-)
-
-LOCATION_RE = re.compile(
-    r"\b[A-Z][a-zA-Z.'-]+(?:\s[A-Z][a-zA-Z.'-]+){0,2},\s?(?:[A-Z]{2}\b|[A-Z][a-z]+)"
-)
-
-REMOTE_RE = re.compile(r"\b(?:remote|hybrid|on-?site)\b", re.IGNORECASE)
-
-PAGINATION_HREF_RE = re.compile(r"(?:[?&](?:page|pg|p|from|startrow)=|/page/)", re.IGNORECASE)
-PAGINATION_TEXT_RE = re.compile(r"^(?:next|next page|prev|previous|\d{1,3}|»|«|>|<)$", re.IGNORECASE)
-
-ATS_HOST_RE = re.compile(
-    r"(?:myworkdayjobs|workday|ashbyhq|greenhouse\.io|lever\.co|icims|taleo"
-    r"|successfactors|oraclecloud|cadienttalent|governmentjobs|edjoin|appone"
-    r"|jobvite|smartrecruiters|ultipro|paylocity|workforcenow|brassring"
-    r"|silkroad|jazzhr|breezy|recruitee|teamtailor|phenom|avature|eightfold"
-    r"|dayforcehcm|paycom|bamboohr|workable)",
-    re.IGNORECASE,
-)
-
-URL_KEYWORD_RE = re.compile(
-    r"(?:/careers?|/jobs?|search-?jobs|job-?search|/openings|/opportunit"
-    r"|/vacanc|/join-?us|/work-?with-?us|search-?results)",
-    re.IGNORECASE,
-)
-
-TITLE_KEYWORD_RE = re.compile(
-    r"\b(?:jobs?|careers?|opening|opportunit|vacanc|hiring|work with us"
-    r"|join us|employment|carrers)\b",
-    re.IGNORECASE,
+PAGINATION_TEXT_RE = re.compile(
+    r"^(?:next|next page|prev|previous|\d{1,3}|»|«|>|<)$", re.IGNORECASE
 )
 
 SIGNAL_NAMES = (
@@ -212,16 +145,6 @@ def load_pages(pages_dir: Path) -> list[Page]:
     if not pages:
         raise SystemExit(f"No cached pages in {pages_dir}. Run dump_pages.py first.")
     return sorted(pages, key=lambda page: (page.slug, page.kind))
-
-
-def visible_text(html: str) -> str:
-    """Reduce rendered HTML to roughly the text a person would see, by dropping
-    script and style blocks and then every remaining tag. Returns one long
-    whitespace-collapsed string; `unescape` turns entities such as `&amp;` back
-    into their real characters."""
-    without_code = re.sub(r"(?is)<(script|style|noscript)\b.*?</\1\s*>", " ", html)
-    without_tags = re.sub(r"(?s)<[^>]+>", " ", without_code)
-    return re.sub(r"\s+", " ", unescape(without_tags)).strip()
 
 
 def href_shape(href: str) -> str:
