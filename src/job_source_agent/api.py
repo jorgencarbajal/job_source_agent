@@ -19,13 +19,24 @@ instance and would need a real store if this ever ran on several.
 
 Running it:
 
-    uv run uvicorn job_source_agent.api:app --reload
+    uv run uvicorn job_source_agent.api:app
 
     1. Open http://127.0.0.1:8000.
     2. Paste up to 10 LinkedIn job URLs, one per line.
     3. Watch each row fill in as its walk finishes.
 
     Every submitted URL costs about 55 ScrapingDog credits, roughly 2.2 cents.
+
+Do not add `--reload` on Windows, and do not run more than one worker. Uvicorn
+picks its event loop with `use_subprocess = reload or workers > 1`, and on
+Windows that switches it from `ProactorEventLoop` to `SelectorEventLoop`, which
+cannot spawn subprocesses at all. Playwright starts its driver as a subprocess,
+so the first page load dies with a bare `NotImplementedError` that names neither
+uvicorn nor the flag. Linux is unaffected, so this only bites in local
+development.
+
+Multiple workers are wrong here for a second reason regardless of platform: each
+would hold its own browser and its own copy of the daily budget below.
 """
 
 from __future__ import annotations
