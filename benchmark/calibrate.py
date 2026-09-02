@@ -25,6 +25,8 @@ Running it:
     2. Score all signals on each page.
     3. Print a per-company table of the raw numbers, positives above negatives.
     4. Print a per-signal summary with the suggested cutoff and its split.
+    5. Name any positive that shows no job evidence at all, which usually means
+       the page failed to load its jobs rather than that it has none.
 
 Options:
 
@@ -53,11 +55,19 @@ DEFAULT_PAGES_DIR = BENCHMARK_DIR / "pages"
 
 KINDS = ("positive", "negative")
 
+COUNT_NOUNS = (
+    r"(?:jobs?|positions?|openings?|opportunit(?:y|ies)|vacanc(?:y|ies)"
+    r"|roles?|results?)"
+)
+
 RESULT_COUNT_RE = re.compile(
+    r"(?:"
     r"\b\d[\d,]*\s*(?:\+\s*)?"
     r"(?:open\s+|available\s+|current\s+|matching\s+|total\s+)?"
-    r"(?:jobs?|positions?|openings?|opportunit(?:y|ies)|vacanc(?:y|ies)"
-    r"|roles?|results?)\b",
+    + COUNT_NOUNS + r"\b"
+    r"|"
+    r"\b" + COUNT_NOUNS + r"\s*\(\s*\d[\d,]*\s*\)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -68,12 +78,35 @@ JOB_HREF_RE = re.compile(
 )
 
 TITLE_NOUN_RE = re.compile(
-    r"\b(?:engineer|manager|analyst|specialist|director|technician|nurse"
-    r"|associate|representative|intern|coordinator|supervisor|assistant"
-    r"|developer|designer|accountant|attorney|consultant|architect|scientist"
-    r"|operator|driver|clerk|teacher|officer|administrator|president|lead"
-    r"|agent|advisor|counselor|therapist|mechanic|welder|planner|buyer"
-    r"|recruiter|controller|auditor|paralegal|cashier|server|technologist)\b",
+    r"\b(?:"
+    r"engineer|manager|analyst|specialist|director|technician|nurse"
+    r"|associate|representative|intern|internship|coordinator|supervisor"
+    r"|assistant|developer|designer|accountant|attorney|consultant|architect"
+    r"|scientist|operator|driver|clerk|teacher|officer|administrator"
+    r"|president|lead|agent|advisor|adviser|counselor|therapist|mechanic"
+    r"|welder|planner|buyer|recruiter|controller|auditor|paralegal|cashier"
+    r"|server|technologist"
+    r"|worker|handler|laborer|labourer|assembler|machinist|fabricator"
+    r"|custodian|janitor|packer|picker|loader|forklift|warehouse|stocker"
+    r"|cook|chef|baker|housekeeper|attendant|aide|orderly|caregiver"
+    r"|dispatcher|installer|inspector|maintenance|millwright|electrician"
+    r"|plumber|carpenter|painter|roofer|foreman|crew|apprentice|trainee"
+    r"|technician|machine|press|forklift|shift"
+    r"|physician|surgeon|pharmacist|therapist|technician|hygienist|dentist"
+    r"|paramedic|phlebotomist|radiologist|sonographer|dietitian|counsellor"
+    r"|teller|underwriter|actuary|broker|adjuster|appraiser|bookkeeper"
+    r"|analyst|strategist|marketer|copywriter|editor|writer|producer"
+    r"|photographer|videographer|animator|illustrator"
+    r"|scheduler|dispatcher|expeditor|estimator|surveyor|drafter|draftsman"
+    r"|programmer|tester|sre|devops|administrator|dba|statistician"
+    r"|principal|superintendent|counselor|librarian|instructor|professor"
+    r"|tutor|paraeducator|substitute|coach|trainer|facilitator"
+    r"|guard|deputy|dispatcher|firefighter|ranger|inspector"
+    r"|bartender|barista|host|hostess|waiter|waitress|concierge|valet"
+    r"|stylist|barber|esthetician|groomer"
+    r"|pilot|conductor|courier|deliverer|chauffeur|trucker"
+    r"|vp|chief|head|partner|fellow|apprentice|volunteer"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -112,12 +145,23 @@ SIGNAL_NAMES = (
     "job_hrefs",
     "href_family",
     "title_nouns",
+    "title_text",
     "locations",
     "pagination",
     "ats_host",
     "url_keyword",
     "title_keyword",
 )
+
+TIER_ONE = (
+    "count_phrase",
+    "job_hrefs",
+    "title_nouns",
+    "title_text",
+    "locations",
+)
+
+SUSPECT_CEILING = 2
 
 
 @dataclass
@@ -227,6 +271,12 @@ def score_page(page: Page) -> Scores:
     result.values["title_nouns"] = len(titled)
     result.evidence["title_nouns"] = [link["text"] for link in titled[:8]]
 
+    in_text = TITLE_NOUN_RE.findall(text)
+    result.values["title_text"] = len(in_text)
+    result.evidence["title_text"] = [
+        match.group(0) for match in TITLE_NOUN_RE.finditer(text)
+    ][:8]
+
     places = LOCATION_RE.findall(text)
     result.values["locations"] = len(places) + len(REMOTE_RE.findall(text))
     result.evidence["locations"] = [match.group(0) for match in LOCATION_RE.finditer(text)][:8]
@@ -273,6 +323,37 @@ def suggest_cutoff(positives: list[int], negatives: list[int]) -> tuple[int, int
             best_gap = gap
             best = (cutoff, kept, leaked)
     return best
+
+
+def print_suspects(scored: list[Scores]) -> None:
+    """Name any positive page that shows no evidence of job rows at all, since a
+    listings page scoring zero on every Tier 1 signal is far more likely to be a
+    bad capture than a real result. Prints nothing when every positive looks
+    plausible, and prints the command that re-renders each suspect."""
+    suspects = [
+        score
+        for score in scored
+        if score.page.kind == "positive"
+        and all(score.values[name] <= SUSPECT_CEILING for name in TIER_ONE)
+    ]
+    if not suspects:
+        return
+
+    print("\nSUSPECT CAPTURES -- positives with no job evidence at all")
+    print("-" * 88)
+    for score in suspects:
+        readings = "  ".join(f"{name}={score.values[name]}" for name in TIER_ONE)
+        print(f"  {score.page.slug}\n      {readings}")
+        print(
+            f"      re-render: uv run python benchmark/dump_pages.py "
+            f'--only "{score.page.slug}" --kind positive --force'
+        )
+    print(
+        "\n  A page can read zero because the site failed to load its jobs that "
+        "one time,\n  or because the ground-truth URL points at a careers page "
+        "rather than a listing.\n  Re-render first; if the numbers do not move, "
+        "check the URL by hand."
+    )
 
 
 def print_table(scored: list[Scores]) -> None:
@@ -371,6 +452,7 @@ def main() -> int:
     print(f"Scored {len(scored)} pages from {pages_dir}\n")
     print_table(scored)
     print_summary(scored)
+    print_suspects(scored)
 
     if args.detail:
         print_detail(scored, args.detail)
