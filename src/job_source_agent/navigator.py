@@ -57,13 +57,14 @@ from dataclasses import dataclass, field
 from job_source_agent import arrival, llm
 from job_source_agent.arrival import CONFIDENT_SCORE, ArrivalScore
 from job_source_agent.browser import BrowserSession
-from job_source_agent.config import MAX_HOPS
+from job_source_agent.config import MAX_HOPS, WALK_TIMEOUT
 from job_source_agent.models import Hop
 
 ARRIVED = "arrived"
 LIKELY = "likely, not certain"
 NO_LISTINGS = "no listings found"
 UNREACHABLE = "nothing loaded"
+TIMED_OUT = "timed out"
 
 
 @dataclass
@@ -133,15 +134,38 @@ async def walk(
     start_url: str,
     session: BrowserSession | None = None,
     max_hops: int = MAX_HOPS,
+    timeout: float = WALK_TIMEOUT,
 ) -> Walk:
     """Follow links from a company website until the job listings are found or
-    the budget runs out, returning the best page seen along the way. Creates its
-    own browser if one is not passed, and closes only what it created, so the
-    benchmark can share a single Chrome across many walks."""
+    the budget runs out, returning the best page seen along the way.
+
+    Gives up after `timeout` seconds and returns whatever it had found by then,
+    because a walk that never finishes is worse than one that finishes badly.
+    `asyncio.wait_for` cancels the inner work when the clock runs out, and the
+    partial result is still worth returning.
+    """
+    partial = Walk(start_url=start_url)
+    try:
+        return await asyncio.wait_for(
+            _walk(start_url, session, max_hops, partial), timeout
+        )
+    except asyncio.TimeoutError:
+        partial.outcome = _describe(partial) if partial.listings_url else TIMED_OUT
+        return partial
+
+
+async def _walk(
+    start_url: str,
+    session: BrowserSession | None,
+    max_hops: int,
+    result: Walk,
+) -> Walk:
+    """Do the actual walking, filling in the `Walk` it was handed. Takes the
+    result object from the caller rather than creating one so that a walk
+    abandoned on timeout still hands back the hops it managed."""
     own_session = session is None
     session = session or BrowserSession()
 
-    result = Walk(start_url=start_url)
     visited: set[str] = set()
     leftovers: list[llm.Candidate] = []
     retry_available = True

@@ -33,8 +33,10 @@ Options:
                      `negative` (the homepages), or `both`. Default `both`.
     --only TEXT      Only companies whose name contains TEXT, matched without
                      regard to case. Use it to retry a single flaky site.
-    --concurrency N  How many pages to load at the same time. Default 4.
-                     Each one is a real browser context holding real memory.
+    --concurrency N  How many pages to load at the same time. Defaults to
+                     config.BROWSER_CONCURRENCY, which is 2. Each one is a
+                     real browser context holding real memory, and starving
+                     them makes pages snapshot before they finish building.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from job_source_agent.browser import BrowserSession, PageSnapshot
+from job_source_agent.config import BROWSER_CONCURRENCY
 
 BENCHMARK_DIR = Path(__file__).resolve().parent
 GROUND_TRUTH = BENCHMARK_DIR / "ground_truth.csv"
@@ -56,7 +59,7 @@ PAGES_DIR = BENCHMARK_DIR / "pages"
 KINDS = ("positive", "negative")
 COLUMN_FOR_KIND = {"positive": "listings_url", "negative": "website"}
 
-DEFAULT_CONCURRENCY = 4
+DEFAULT_CONCURRENCY = BROWSER_CONCURRENCY
 
 
 def slugify(name: str) -> str:

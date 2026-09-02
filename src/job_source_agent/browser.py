@@ -149,15 +149,27 @@ class BrowserSession:
 
     async def close(self) -> None:
         """
-        Close the playwright and browser processes
+        Close the playwright and browser processes.
+
+        Never raises. A crashed driver makes `close()` fail with "Connection
+        closed while reading from the driver", and a shutdown error thrown from
+        a `finally` block will throw away a run's results on the way out. The
+        handles are cleared either way, so a later call cannot use a dead one.
         """
         async with self._lock:
-            if self._browser is not None:
-                await self._browser.close()
-                self._browser = None
-            if self._playwright is not None:
-                await self._playwright.stop()
-                self._playwright = None
+            browser, self._browser = self._browser, None
+            playwright, self._playwright = self._playwright, None
+
+            if browser is not None:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if playwright is not None:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
 
     async def snapshot(self, url: str) -> PageSnapshot | None:
         """

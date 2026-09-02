@@ -34,7 +34,20 @@ SCRAPINGDOG_RETRY_STATUS = (429, 500, 502, 503, 504)
 BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "1") != "0"
 PAGE_TIMEOUT = 30.0
 
+# How many pages may render at once. Measured, not guessed: at 4 the benchmark
+# scored 14/20 in 584s, at 2 it scored 16/20 in 423s. Starving the browser makes
+# pages snapshot half-built, so walks wander and burn their whole hop budget --
+# fewer workers was both more accurate and faster. Treat 2 as a ceiling on
+# smaller hardware, not a target.
+BROWSER_CONCURRENCY = int(os.getenv("BROWSER_CONCURRENCY", "2"))
+
 MAX_HOPS = 5
+
+# A whole walk must finish or be abandoned. When Playwright's driver subprocess
+# dies, a page load in flight has nothing left to answer it and waits forever --
+# one stuck company hung a 20-company benchmark, and would hang all ten URLs in
+# the demo. Five hops at roughly 8s each plus model calls fits comfortably.
+WALK_TIMEOUT = 120.0
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LLM_MODEL = "claude-haiku-4-5"
@@ -44,6 +57,14 @@ LLM_TIMEOUT = 30.0
 # An identity-linked key must name the workspace it acts in, or every call comes
 # back 400. Ordinary keys ignore this, so it is optional.
 ANTHROPIC_WORKSPACE_ID = os.getenv("ANTHROPIC_WORKSPACE_ID", "")
+
+
+# The demo is a public URL and every submission spends real credits, so the app
+# stops itself rather than trusting that nobody finds it. Anyone may use the
+# demo; nobody can run the bill past this in a day.
+DEMO_MAX_URLS = 10
+DEMO_DAILY_CREDITS = int(os.getenv("DEMO_DAILY_CREDITS", "5000"))
+CREDITS_PER_URL = 55
 
 
 def require_anthropic_key() -> str:

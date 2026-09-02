@@ -1,97 +1,148 @@
+# Project sequence
+
+What each file does and why it exists. In roughly the order the data moves.
+
 ## Signals
 
-The nine things `arrival.py` looks at to decide whether a page is a list of open
-jobs. Measured against the ground truth by `benchmark/calibrate.py`; the counts
-in brackets are how many of the 20 positives and 20 negatives scored above the
-best cutoff.
+The eight things `arrival.py` looks at to decide if a page is a list of open
+jobs. Counts in brackets are positives / negatives above the best cutoff, out of
+20 each, measured by `benchmark/calibrate.py`.
 
-**Tier 1 — is this page actually showing job rows?** These carry the score.
+**Tier 1 — are there job rows here?** These carry the score.
 
-- `count_phrase` [17/20 vs 0/20] — the page stating its own job count: "204 open positions", "1-25 of 1,203 jobs", or Oracle's "Jobs (448)". A page only announces how many jobs it has when it is showing them, which is why no negative scored above zero.
-- `job_hrefs` [15/20 vs 2/20] — links whose URL points at one specific posting (`/job/12345`, `jobid=`, `/requisition`). A list of jobs is built out of links to individual jobs, so this counts the rows through their destinations.
-- `title_nouns` [15/20 vs 1/20] — links whose *text* is a job title (engineer, welder, nurse, forklift, custodian). The precise version of "are there rows here", since on most boards the clickable text is the job name. Goes blind when a board puts the title outside the anchor.
-- `title_text` [19/20 vs 3/20] — the same job-title words anywhere in the visible page text rather than only inside links. This is what rescues Oracle HCM boards like Honeywell and International Paper, where the titles sit next to the links instead of inside them.
-- `locations` [19/20 vs 4/20] — "City, ST" patterns plus Remote/Hybrid/On-site. Job rows almost always carry a location beside the title, so many locations means many rows. Leaks on civic and retail homepages, which list locations too.
+| signal | split | what it detects |
+|---|---|---|
+| `count_phrase` | 17 / 0 | The page states its own job count: "204 open positions", "Jobs (448)". Pages only say that when they are showing them. |
+| `job_hrefs` | 15 / 0 | Links pointing at one specific posting (`/job/12345`, `jobid=`). Counts the rows through their destinations. |
+| `title_nouns` | 15 / 1 | Job-title words as link text (engineer, welder, custodian). Precise, but blind when a board puts the title outside the anchor. |
+| `title_text` | 19 / 3 | The same words anywhere in the page text. Rescues Oracle boards like Honeywell, where titles sit beside the links, not inside them. |
+| `locations` | 19 / 4 | "City, ST" plus Remote/Hybrid. Job rows carry a location; so do retail and civic homepages, which is where it leaks. |
 
-**Tier 2 — are we even in the right neighbourhood?** Small points. These break
-ties and keep the navigator pointed the right way; they can never decide arrival
-on their own.
+**Tier 2 — are we in the right neighbourhood?** Small points. Break ties, never decide.
 
-- `title_keyword` [19/20 vs 1/20] — job/career/opening/hiring words in the page `<title>`. Confirms the page is jobs-related, says nothing about whether jobs are on it.
-- `url_keyword` [17/20 vs 1/20] — `/careers`, `/jobs`, `/search-jobs`, `/openings` in the final URL. Same purpose and same limitation, read off the address instead of the page.
-- `ats_host` [8/20 vs 0/20] — the URL sits on a known applicant tracking system (Workday, Ashby, Oracle HCM, iCIMS, GovernmentJobs, edjoin). Recognises that you have landed on a job board. Never used to guess a URL, and it cannot tell a board's front door from its actual listing.
+| signal | split | what it detects |
+|---|---|---|
+| `title_keyword` | 19 / 1 | Job wording in the `<title>`. Says the page is jobs-related, not that jobs are on it. |
+| `url_keyword` | 17 / 1 | `/careers`, `/jobs`, `/openings` in the address. Same idea, read off the URL. |
+| `ats_host` | 8 / 0 | A known applicant tracking system. Recognises a job board, never guesses one, and cannot tell its front door from its listings. |
+
+**Dropped:** `pagination` (too rare) and `href_family`, a repeated-URL-shape
+detector (homepages have big link families too, and it duplicated `job_hrefs`).
 
 **Why two tiers.** AMETEK's LinkedIn profile points at `ametek.com/careers`, a
-careers page with no jobs on it. It scores 1 on both Tier 2 signals and near
-zero on every Tier 1 signal — exactly the page the hop loop must not stop on.
-That split is the whole design.
+careers page with no jobs on it. It scores full marks on Tier 2 and zero on Tier
+1 — exactly the page the hop loop must not stop on.
 
 ## src/job_source_agent/config.py
 
-- A simple configuration file
+- Settings and secrets in one place, read from `.env` once.
+- Holds every tunable the other files share, so they cannot drift apart: hop budget, walk timeout, model name, and the two separate concurrency limits.
+- `BROWSER_CONCURRENCY` is 2, measured. At 4 the benchmark scored 14/20 in 584s; at 2 it scored 16/20 in 423s. Starving the browser makes pages snapshot half-built, so walks wander and burn their whole budget.
+- `SCRAPINGDOG_CONCURRENCY` is separate and tighter. The two limits are unrelated and one number cannot serve both.
+- `require_*_key()` fails loudly at the start rather than as a confusing 401 halfway through a run.
 
 ## src/job_source_agent/models.py
 
-- Holds data classes. `CompanyIdentity` is what stage 1 gets out of the linked in job posting URL. `Hop` keeps track of the path the LLM (crawler) takes through the browser and also notes reasoning. `JobSourceResult` contains the final outcome of the run.
+- The data passed between stages. `CompanyIdentity` is what stage 1 gets from a LinkedIn URL. `Hop` is one step of the walk with its reason and score. `JobSourceResult` is the final answer for one URL.
 
 ## src/job_source_agent/linkedin.py
 
-- Stage 1, and the only code that spends credits. Turns a LinkedIn job posting URL into the company behind it, website included.
-- The default path is two calls, because ScrapingDog scrapes one page per call and the website only lives on the company profile. We extract the job id from the URL and send it to `SCRAPINGDOG_JOB_URL`, which returns the company name and a profile link; we parse the slug out of that link and send it to `SCRAPINGDOG_PROFILE_URL`, which returns the website.
-- Run as a standalone file for a quick check, or import `resolve()`, which is what the rest of the project uses. `--slug` skips the first call when you already know the slug, halving the cost; `--raw` dumps every field both calls returned, for debugging.
+- Stage 1, and the only code that spends credits. LinkedIn job URL in, company name and website out.
+- Two calls, because ScrapingDog scrapes one page per call and the website only exists on the company profile. Job id gives the company name and a profile link; the slug parsed from that link gives the website.
+- Retries 429 and server errors with a growing wait. ScrapingDog rejects calls made too close together, and a rejection is temporary, not a failed lookup.
+- Run standalone for one URL, or import `resolve()`. `--slug` skips the first call and halves the cost, `--raw` dumps every field for debugging.
 
 ## src/job_source_agent/browser.py
 
-- The eyes of stage 2. Loads one URL in a real browser and hands back a `PageSnapshot`: the final URL after redirects, the title, the rendered HTML, and every link as text plus href. It filters nothing, because choosing a link is `llm.py`'s job and deciding we have arrived is `arrival.py`'s.
-- A plain HTTP fetch was not enough. Nearly half the ground-truth boards build their listings with JavaScript, and two refuse non-browser clients outright, so pages have to be rendered rather than downloaded.
-- `BrowserSession` keeps one Chrome running and opens a fresh context per page, so the hop loop pays the browser startup cost once instead of once per hop. The module-level `snapshot()` is the throwaway version for one-off calls and the CLI.
-- Four things it does that are not obvious, each learned from a site that broke without them: it launches real Chrome rather than bundled Chromium (CarMax's CDN returns 403 to Chromium), it retries with a progressively looser wait (Honeywell's CDN fails intermittently), it waits for a link to exist before reading the page (a committed page has no anchors yet), and it adds a scheme to bare domains (`page.goto()` rejects them outright).
-- Run as a standalone file against any URL to see what it extracts. `--all` prints every link instead of the first 25.
+- The eyes of stage 2. Loads a URL in a real browser and returns a `PageSnapshot`: final URL, title, rendered HTML, and every link. Filters nothing — choosing is `llm.py`'s job, deciding we arrived is `arrival.py`'s.
+- Plain HTTP was not enough. Half the boards build their listings with JavaScript and two refuse non-browser clients outright.
+- `BrowserSession` keeps one Chrome alive and opens a fresh context per page, so a run of many pages pays startup once.
+- Four non-obvious fixes, each from a site that broke without it: real Chrome rather than bundled Chromium (CarMax returns 403 to Chromium), retry with a looser wait each time (Honeywell's CDN fails intermittently), wait for a link to exist before reading (a committed page has none yet), and add a scheme to bare domains.
+- Run standalone against any URL to see what it extracts. `--all` shows every link.
 
 ## src/job_source_agent/arrival.py
 
-- The thing that ends the hop loop. `navigator.py` follows links until it runs out of budget; this module is what tells it which of the pages it saw was the answer.
-- Takes a `PageSnapshot` from `browser.py` and returns an `ArrivalScore` — a total, what each signal read, what each one paid, and a one-line reason that feeds `Hop.reason` and the demo output.
-- Nothing here is a gate. Eight signals each vote and the votes are added, because no single test survives real career sites: titles lie ("IP Global Career Site", "Carrers"), job boards sit on hosts whose names mean nothing, and half of them build their listings with JavaScript.
-- Each signal is yes-or-no, not a quantity. A signal pays its points once it clears its cutoff and how far past it landed is discarded. Gopuff shows 1,523 locations and MLK shows 6, and both are listings pages — letting magnitude into the score would drown the small one.
-- The cutoffs come from `benchmark/calibrate.py`, measured against the 20 hand-walked companies. This file **owns** the regexes and the benchmark imports them, so calibration can never drift into measuring a pattern the agent no longer uses.
-- Measured across all 40 cached pages: 20/20 listings pages clear the arrival score, 1/20 homepages do, and no company's homepage outscores its own board. The score is a comparator within one company rather than a global classifier, which is why the loop keeps the best page it saw instead of stopping at a threshold.
-- Run as a standalone file to see the full breakdown for any page. `--cached PATH` scores a page already saved by `dump_pages.py` (free and instant, give it the `.json`), and `--quiet` prints just the score and reason without the signal table.
+- Decides whether a page is a list of open jobs. Ends the hop loop.
+- Eight signals vote and the votes are added. No single test survives real career sites: titles lie, ATS hosts mean nothing on their own, half the pages are JavaScript.
+- Each signal is yes-or-no, not a quantity. Gopuff shows 1,523 locations and MLK shows 6; both are listings pages, and letting magnitude in would drown the small one.
+- Owns the regexes. `calibrate.py` imports them, so calibration can never drift into measuring a pattern the agent no longer uses.
+- Measured on all 40 cached pages: every company's listings page outscores its own homepage. The score compares within one company, not across companies.
+- Run standalone on a URL, or `--cached PATH` on a saved page. `--quiet` drops the signal table.
 
 ## src/job_source_agent/llm.py
 
-- Picks which link to click next. The only file in stage 2 that costs money.
-- Two passes. A free ranker scores every link on careers wording, address, and whether it sits in the nav or footer, then the top 30 go to Haiku, which picks one and says why.
-- The ranker exists because homepages carry 100-800 links and sending them all would be slow and noisy. Measured against all 20 homepages, the top 30 always still contains a careers link, so the shortlist never loses the trail.
-- The model exists because the ranker produces ties it cannot break. Honeywell's homepage has five links tied at the same score and the right answer sits sixth, in the footer. The model picked the right one.
-- The model answers with a number from the list, not a URL. A bad number fails a range check; a made-up URL would send the browser somewhere that does not exist.
-- If the API call fails it returns the top-ranked link instead and records why, so a network problem costs one worse hop rather than the whole run.
-- Run it standalone to see the ranking for any page. `--cached PATH` uses a saved page, `--all` shows every scoring link, and `--choose` also calls the model — that last one is the only part that costs anything.
+- Picks the next link. The only file in stage 2 that costs money.
+- Two passes. A free ranker scores every link on wording, address and nav/footer position, then the top 30 go to Haiku, which picks one and says why.
+- The ranker exists because homepages carry 100-800 links. Measured on all 20 homepages, the top 30 always still holds a careers link.
+- The model exists because the ranker produces ties it cannot break. Honeywell's homepage has five links tied at the same score and the right answer sits sixth, in the footer. The model found it.
+- The model answers with a number from the list, not a URL. A bad number fails a range check; a made-up URL would send the browser nowhere real.
+- If the API fails it returns the top-ranked link and records why, so a network problem costs one worse hop rather than the run.
+- Run standalone to see the ranking. `--cached PATH` uses a saved page, `--all` shows every scoring link, `--choose` also calls the model and is the only part that costs anything.
 
 ## src/job_source_agent/navigator.py
 
-- The loop that ties stage 2 together: render a page, score it, pick a link, repeat. Up to 5 pages.
-- It holds no judgment of its own. `browser.py` renders, `arrival.py` scores, `llm.py` chooses. This file only decides when to stop and which page to keep.
-- Keeps the best page it saw rather than stopping at the first decent one, because scores only compare within a single company.
-- Stops early only at a score of 46 or above, where a page is unmistakably a job board. Below that it spends the full budget and lets best-so-far decide, which is slower but never wrong.
-- At a dead end — a page that will not load, or one with nothing worth following — it backs up and takes the next-best link from the page before it. Human paths take 1 to 3 hops and the budget is 5, so that spare capacity was already there.
-- Renders a page a second time if it shows no sign of jobs at all, once per walk. That is the Esri case, where a page loaded correctly but its jobs never arrived and nothing looked wrong.
-- Returns a `Walk`: the best URL, its score, every hop with the reason for it, and an outcome saying whether the result is certain, likely, or nothing.
-- Run it standalone against any company website. `--max-hops N` changes the budget, `--quiet` prints just the answer. Each hop is one model call, a fraction of a cent.
+- The loop: render, score, pick a link, repeat, up to 5 pages.
+- Holds no judgment of its own. It only decides when to stop and which page to keep.
+- Keeps the best page seen rather than the first decent one, because scores compare only within a single company.
+- Stops early only at 46 or above, where a page is unmistakably a job board. Below that it spends the budget and lets best-so-far decide — slower, never wrong.
+- At a dead end it backs up and takes the next-best link from the previous page. Human paths run 1 to 3 hops against a budget of 5, so the slack was already there.
+- Renders a page twice if it shows no sign of jobs at all, once per walk. That is the Esri case: the page loaded fine but its jobs never arrived and nothing looked wrong.
+- Returns a `Walk`: best URL, score, every hop with its reason, and an outcome saying whether the result is certain, likely, or nothing.
+- Gives up after `WALK_TIMEOUT` and returns what it found. When the browser subprocess dies, a page load in flight has nothing to answer it and waits forever -- one stuck company hung a whole benchmark run.
+- Run standalone on any company website. `--max-hops N` changes the budget, `--quiet` prints just the answer.
+
+## src/job_source_agent/pipeline.py
+
+- The whole product in one function: LinkedIn URL in, job listings page out.
+- Thin by design. It calls `resolve()` then `walk()` and records what came back.
+- `resolve()` is synchronous so it runs on a worker thread, or one slow ScrapingDog call stalls every other URL in the batch.
+- The two stages fail differently and the outcome says which. No website on the profile is a stage 1 problem; an unreachable site is a stage 2 problem.
+- A failed URL is a result, not an exception, so one bad posting cannot take down a batch of ten.
+- `run_many()` shares one browser and hands back each result as it finishes, which is what lets the demo stream rows in.
+- Run standalone on one or more URLs. It prints the cost first; `--dry-run` spends nothing.
+
+## src/job_source_agent/api.py
+
+- Not built yet. The FastAPI demo Jobnova uses to test their own links.
+- Accepts up to 10 URLs, runs them 4 at a time, streams each result as it lands.
+- Shows the hops, not just the answer — a visible trail is the difference between a result and a demonstration.
+
+## benchmark/ground_truth.csv
+
+- The answer key. 20 companies walked by hand: `company, website, linkedin_url, listings_url, hops`.
+- Makes two loops possible. Starting at `website` tests stage 2 for free. Starting at `linkedin_url` tests everything and costs credits.
+- Three rows were corrected after the agent disagreed with them, so it is not infallible — it is a record of what a human found.
+
+## benchmark/fill_websites.py
+
+- Filled the `website` column by running stage 1 over every row. Costs credits.
+- Skips rows that already have a website, so re-running only pays for blanks.
+- Writes back after every row. A crash on row 15 must not discard the fourteen already bought.
+- `--dry-run` shows what it would look up and spends nothing.
 
 ## benchmark/dump_pages.py
 
-- Renders all 40 ground-truth pages once and caches them to disk, so the signal work can be done against real pages without waiting on a browser every time. Each CSV row contributes its `listings_url` as a positive example and its `website` as a negative one.
-- Writes two files per page into `benchmark/pages/<kind>/`. The `.html` is the rendered DOM. The `.json` holds the final URL, the title, and every link with its `in_nav` and `in_footer` flags — those flags are computed inside the browser, so they cannot be recovered by re-parsing the saved HTML later.
-- Uses one `BrowserSession` for all 40 pages and loads several at a time, which is the case that session object exists for. Costs nothing; it only drives Chrome.
-- It is resumable: anything already cached is skipped, so one flaky site does not cost a full rerun. `--force` re-renders anyway, `--only TEXT` limits it to companies matching a name, `--kind` picks positives or negatives, `--concurrency` sets how many pages load at once.
-- **This is the only file that talks to a browser.** Change a URL in the CSV and you must re-dump before the numbers mean anything.
+- Renders all 40 ground-truth pages once and caches them, so signal work happens in milliseconds instead of waiting on Chrome. Each row gives a listings page as a positive and a homepage as a negative.
+- Writes `.html` for the text and `.json` for the links with their nav and footer flags — those are computed inside the browser and cannot be recovered by re-parsing the HTML.
+- Resumable: anything already cached is skipped, so one flaky site does not cost a full rerun.
+- `--force` re-renders, `--only TEXT` limits it to one company, `--kind` picks positives or negatives, `--concurrency` sets how many load at once.
+- Change a URL in the ground truth and you must re-dump before any calibration number means anything.
 
 ## benchmark/calibrate.py
 
-- Measures every candidate signal against the cached pages and prints how well each one separates listings pages from the rest. This is how the arrival signals stopped being guesses.
-- Reads only from disk, so it runs in about a second and can be rerun after every tweak to a regex or a weight. It never renders anything.
-- Prints three things: a per-company table of raw counts, a per-signal summary with the cutoff that splits the two sets most cleanly, and a list of suspect captures — positives showing no job evidence at all, which almost always means the page failed to load its jobs rather than that it has none.
-- That suspect check exists because two bad pages slipped through by looking fine. Esri cached with zero jobs on it, and International Paper's recorded URL turned out to be a careers landing page rather than a listing. Both were caught by eye; now the script says it out loud.
-- `--detail SIGNAL` shows the actual strings behind a number, which is how you confirm a signal measures what you think. `--csv PATH` writes the raw counts out for sorting elsewhere. `--pages DIR` reads a different cache.
+- Measures every candidate signal against the cached pages and shows how well each separates listings pages from everything else. This is how the signals stopped being guesses.
+- Reads only from disk, so it reruns in about a second after any change to a regex or a weight. It never renders anything.
+- Prints three things: raw counts per company, a per-signal summary with the cleanest cutoff, and a list of suspect captures — positives with no job evidence at all, which usually means the page failed to load its jobs rather than that it has none.
+- That last check exists because two bad pages slipped through by looking fine: Esri cached with zero jobs, and International Paper's recorded URL turned out to be a careers landing page.
+- `--detail SIGNAL` shows the strings behind a number, `--csv PATH` writes the counts out, `--pages DIR` reads a different cache.
 
+## benchmark/run.py
+
+- Runs the agent against the answer key and reports the success rate. This is the number the take-home asks for.
+- Two modes. The default starts at each `website` and is free apart from a few cents of model calls, so it can be run constantly. `--full` starts at each `linkedin_url` and pays for stage 1 — run that once at the end.
+- Matching is strict: scheme, `www.`, trailing slash, query and fragment are normalised away, then host and path must match. Nothing looser, because a permissive comparison fails silently and inflates the result, while a strict one fails loudly and prints the pair to check.
+- The known cost of strict matching: a company reached through a vanity domain counts as a miss even when the page is right, so the reported rate is a floor.
+- Writes each row to disk the moment it finishes, so a crash during a paid run never discards what was already bought.
+- A company that throws becomes a recorded miss rather than ending the run, and `--only NAME` reruns a single company for diagnosis.
+- Result on the development set: 16/20 strict, 18/20 verified by hand, 0 navigation failures. The four strict misses are two correct answers at different URLs and two careers pages showing a subset of jobs.
+- `--dry-run` lists the plan, `--only` and `--limit` narrow it, `--concurrency` and `--max-hops` tune it, `--out` sets the results file.

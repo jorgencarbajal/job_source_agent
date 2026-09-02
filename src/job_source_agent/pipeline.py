@@ -31,10 +31,11 @@ Options:
 
     --dry-run        Show what would be looked up and spend nothing. Use this
                      to check a URL list before paying for it.
-    --concurrency N  How many URLs to walk at once. Default 4. This is the
-                     browser side only -- stage 1 has its own tighter cap,
-                     because ScrapingDog rejects calls made too close together
-                     regardless of how many URLs are in flight.
+    --concurrency N  How many URLs to walk at once. Defaults to
+                     config.BROWSER_CONCURRENCY, which is 2 -- more than that
+                     and pages snapshot half-built. This is the browser side
+                     only; stage 1 has its own tighter cap, because
+                     ScrapingDog rejects calls made too close together.
     --max-hops N     Hop budget per website. Default 5.
     --quiet          One line per URL instead of the full hop trace.
 """
@@ -46,12 +47,16 @@ from typing import AsyncIterator, Sequence
 
 from job_source_agent import linkedin
 from job_source_agent.browser import BrowserSession
-from job_source_agent.config import MAX_HOPS, SCRAPINGDOG_CONCURRENCY
+from job_source_agent.config import (
+    BROWSER_CONCURRENCY,
+    MAX_HOPS,
+    SCRAPINGDOG_CONCURRENCY,
+)
 from job_source_agent.models import CompanyIdentity, JobSourceResult
 from job_source_agent.navigator import walk
 
 NO_WEBSITE = "no website on the company profile"
-DEFAULT_CONCURRENCY = 4
+DEFAULT_CONCURRENCY = BROWSER_CONCURRENCY
 
 
 _stage_one_limit: asyncio.Semaphore | None = None
