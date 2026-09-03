@@ -1,3 +1,5 @@
+20 FOR TUNING
+
 https://www.linkedin.com/jobs/view/4446185484/
 https://www.linkedin.com/jobs/view/4453249813/
 https://www.linkedin.com/jobs/view/4344123263/
@@ -14,3 +16,73 @@ https://www.linkedin.com/jobs/view/4458051733/
 https://www.linkedin.com/jobs/view/4459648137/
 https://www.linkedin.com/jobs/view/4454811413/
 https://www.linkedin.com/jobs/view/4386998726/
+
+20 TESTED
+
+Apetan Consulting LLC: KINDA MISS (Only option is to apply by sending application)
+https://www.linkedin.com/jobs/view/4463100925/
+
+GoQuant: MISS (careers below which leads back to a "view open positions" link of open positions on linked in)
+https://www.linkedin.com/jobs/view/4428208589/
+
+Talent Pluto: KINDA MISS (Manual search, found nothing, sign up required)
+https://www.linkedin.com/jobs/view/4461232980/
+
+TeraData: HIT
+https://www.linkedin.com/jobs/view/4441110569/
+
+Chainlink Labs: KINDA MISS (Manual search, found nothing, not sure how the llm decided this)
+https://www.linkedin.com/jobs/view/4432822516/
+
+Pixoate: KINDA MISS (Nothing on the homepage links to careers)
+https://www.linkedin.com/jobs/view/4461673175/
+
+Torentify: MISS (Got to the jobs listing on the second hop, only had one listing so it did not qualify as "enough")
+https://www.linkedin.com/jobs/view/4462791173/
+
+ShipAiLabs: KINDA MISS (Manual search, found nothing)
+https://www.linkedin.com/jobs/view/4346247900/
+
+IBM: MISS (genuine miss, careers in footer which led to search jobs link)
+https://www.linkedin.com/jobs/view/4451009963/
+
+Ensemble: HIT
+https://www.linkedin.com/jobs/view/4441385345/
+
+Socal Edison: HIT
+https://www.linkedin.com/jobs/view/4461723346/
+
+NantWorks: KINDA MISS (Manual search, found nothing)
+https://www.linkedin.com/jobs/view/4462480811/
+
+ChapsVision: MISS (Language issue, French company, second hop was technically right)
+https://www.linkedin.com/jobs/view/4450951463/
+
+Layup Parts: HIT
+https://www.linkedin.com/jobs/view/4453321637/
+
+Motorola Solutions: HIT
+https://www.linkedin.com/jobs/view/4375807812/
+
+Skyworks Solutions: MISS (path available)
+https://www.linkedin.com/jobs/view/4460336576/
+
+Mach Industries: HIT
+https://www.linkedin.com/jobs/view/4452356584/
+
+Zscaler: HIT
+https://www.linkedin.com/jobs/view/4404543443/
+
+Texas Instruments: HIT
+https://www.linkedin.com/jobs/view/4461392288/
+
+WNC Corporation: HIT (although language issue)
+https://www.linkedin.com/jobs/view/4460112469/
+
+6 KINDA MISS
+5 MISS
+9 HITS
+
+9/20 45% hit rate (include kinda misses)
+
+9/14 64% hit rate (exclude kinda misses)
