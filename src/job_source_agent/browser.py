@@ -29,8 +29,19 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from job_source_agent.config import BROWSER_HEADLESS, PAGE_TIMEOUT
 
-# Playwright's default user agent announces "HeadlessChrome", which is an
-# obvious bot signal. Two ground-truth sites already refuse plain HTTP clients.
+# Headless Chrome announces "HeadlessChrome" in its user agent, which is an
+# obvious bot signal, so that one word is replaced at runtime. Everything else is
+# left as Chrome reports it.
+#
+# A hardcoded string was used here and had to go. It claimed Windows Chrome 151,
+# which was true on the development laptop and a lie on the Linux server running
+# Chrome 152 -- wrong platform, wrong version, and drifting further with every
+# release. Chrome sends `Sec-CH-UA-Platform` honestly regardless, so any site
+# that cross-checks the two sees the mismatch.
+#
+# The constant below is only a fallback for when the real agent cannot be read.
+HEADLESS_MARKER = "HeadlessChrome"
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
@@ -45,9 +56,22 @@ TIMEZONE = "America/Los_Angeles"
 # thing to turn off if a site renders strangely.
 BLOCKED_RESOURCES = {"image", "media", "font"}
 
-# After the DOM is ready, give client-rendered content a chance to appear -- but
-# never wait on `networkidle` alone, which hangs forever on sites that poll.
-SETTLE_TIMEOUT_MS = 5000
+# After the DOM is ready, give client-rendered content a chance to appear.
+#
+# `networkidle` was used here and had to go. It returns after ~500ms of network
+# quiet, and a JavaScript app has exactly such a gap while it boots -- before it
+# has asked for any data. On a quiet machine that gap wins the race and the page
+# is captured empty: Workiva's Workday board came back with no title and zero
+# links on the Linux server while the identical URL rendered 34 links with a flat
+# 6-second wait. The laptop passed only because its network was noisier.
+#
+# So instead: watch the page until it stops changing. Sample the anchor count
+# every SETTLE_POLL_MS and stop once it repeats, or once SETTLE_TIMEOUT_MS is up.
+# That handles both failure directions -- pages that go quiet too early, and
+# pages that need longer than any fixed wait.
+SETTLE_TIMEOUT_MS = 12000
+SETTLE_POLL_MS = 400
+SETTLE_STABLE_SAMPLES = 2
 
 # Some sites fail a navigation intermittently and succeed on the next try --
 # Honeywell's CDN breaks the HTTP/2 handshake perhaps half the time. Each retry
@@ -120,8 +144,32 @@ class BrowserSession:
 
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self._user_agent: str | None = None
         self._lock = asyncio.Lock()
-    
+
+    async def user_agent(self) -> str:
+        """Return the user agent every page load should send, reading it from
+        Chrome itself the first time and remembering it afterwards.
+
+        Takes whatever this Chrome reports and replaces only `HeadlessChrome`
+        with `Chrome`, so the platform and version stay true. Falls back to the
+        `USER_AGENT` constant if the real one cannot be read, which is better
+        than sending nothing.
+        """
+        if self._user_agent is not None:
+            return self._user_agent
+
+        browser = await self.start()
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+            reported = await page.evaluate("navigator.userAgent")
+            await context.close()
+            self._user_agent = str(reported).replace(HEADLESS_MARKER, "Chrome")
+        except PlaywrightError:
+            self._user_agent = USER_AGENT
+        return self._user_agent
+
     async def start(self) -> Browser:
         """
         Start up playwright process and launch the browswer. Returning Browser object.
@@ -183,7 +231,7 @@ class BrowserSession:
             viewport=VIEWPORT,
             locale=LOCALE,
             timezone_id=TIMEZONE,
-            user_agent=USER_AGENT,
+            user_agent=await self.user_agent(),
             ignore_https_errors=True,
         )
         try:
@@ -210,13 +258,8 @@ class BrowserSession:
             except PlaywrightTimeout:
                 pass
 
-            # Best effort: let client-rendered listings appear, but move on if the page never goes quiet.
-            try:
-                await page.wait_for_load_state(
-                    "networkidle", timeout=SETTLE_TIMEOUT_MS
-                )
-            except PlaywrightTimeout:
-                pass
+            # Then wait for the page to stop growing, rather than for the network to go quiet.
+            await _settle(page)
 
             # pass in JavaScript expression to be evaluated in the browser context. create the object holding all the information related to that page.
             try:
@@ -231,6 +274,41 @@ class BrowserSession:
                 return None
         finally:
             await context.close()
+
+
+async def _settle(page) -> None:
+    """Wait until the page stops adding links, or until the time limit is up.
+
+    Returns nothing; it either settles or gives up, and the caller reads whatever
+    the page holds by then. Samples the anchor count every `SETTLE_POLL_MS` and
+    stops once the same number comes back `SETTLE_STABLE_SAMPLES` times in a row,
+    which is a page that has finished building itself.
+
+    This replaces `networkidle`, which measures the wrong thing: a JavaScript app
+    is briefly quiet while booting, before it has requested any data, and on a
+    quiet machine that gap satisfies `networkidle` and the page is captured empty.
+    Counting what is actually on the page cannot be fooled that way.
+    """
+    previous = -1
+    repeats = 0
+    waited = 0
+
+    while waited < SETTLE_TIMEOUT_MS:
+        try:
+            count = await page.evaluate("document.querySelectorAll('a[href]').length")
+        except PlaywrightError:
+            return
+
+        if count == previous and count > 0:
+            repeats += 1
+            if repeats >= SETTLE_STABLE_SAMPLES:
+                return
+        else:
+            repeats = 0
+        previous = count
+
+        await page.wait_for_timeout(SETTLE_POLL_MS)
+        waited += SETTLE_POLL_MS
 
 
 async def _block_heavy_resources(route, request) -> None:

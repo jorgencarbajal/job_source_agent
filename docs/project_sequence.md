@@ -64,7 +64,9 @@ careers page with no jobs on it. It scores full marks on Tier 2 and zero on Tier
 - The eyes of stage 2. Loads a URL in a real browser and returns a `PageSnapshot`: final URL, title, rendered HTML, and every link. Filters nothing — choosing is `llm.py`'s job, deciding we arrived is `arrival.py`'s.
 - Plain HTTP was not enough. Half the boards build their listings with JavaScript and two refuse non-browser clients outright.
 - `BrowserSession` keeps one Chrome alive and opens a fresh context per page, so a run of many pages pays startup once.
-- Four non-obvious fixes, each from a site that broke without it: real Chrome rather than bundled Chromium (CarMax returns 403 to Chromium), retry with a looser wait each time (Honeywell's CDN fails intermittently), wait for a link to exist before reading (a committed page has none yet), and add a scheme to bare domains.
+- Five non-obvious fixes, each from a site that broke without it: real Chrome rather than bundled Chromium (CarMax returns 403 to Chromium), retry with a looser wait each time (Honeywell's CDN fails intermittently), wait for a link to exist before reading (a committed page has none yet), add a scheme to bare domains, and wait for the page to stop changing rather than for the network to go quiet.
+- That last one replaced `networkidle`, which was capturing pages empty. It returns after half a second of network quiet, and a JavaScript app has exactly such a gap while booting, before it has asked for any data. Workiva's board came back with no title and zero links on the Linux server, and 34 links with a flat six-second wait -- the laptop had only been winning that race because its network was noisier. `_settle()` now samples the link count every 400ms and stops once it repeats, which cannot be fooled by a quiet gap.
+- The user agent is read from Chrome at startup rather than hardcoded, with only `HeadlessChrome` swapped for `Chrome`. The old fixed string claimed Windows Chrome 151, which was a lie on a Linux server running 152 -- wrong platform, wrong version, and drifting with every release.
 - Run standalone against any URL to see what it extracts. `--all` shows every link.
 
 ## src/job_source_agent/arrival.py
@@ -130,6 +132,12 @@ careers page with no jobs on it. It scores full marks on Tier 2 and zero on Tier
 - Skips rows that already have a website, so re-running only pays for blanks.
 - Writes back after every row. A crash on row 15 must not discard the fourteen already bought.
 - `--dry-run` shows what it would look up and spends nothing.
+
+## diagnose_page.py
+
+- Temporary. Renders one URL four ways -- resource blocking on or off, fixed wait or `networkidle` -- then calls the real `snapshot()`, so whichever rows come back empty name the cause.
+- Written to find why Workiva scored 58 on the laptop and 4 on the server. It showed `networkidle` returning instantly on a page that had not loaded yet.
+- Delete it once it stops being useful.
 
 ## benchmark/dump_pages.py
 
