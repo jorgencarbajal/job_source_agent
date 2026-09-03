@@ -9,10 +9,23 @@ seconds, and a page that sits blank that long reads as broken. `run_many` hands
 back each result the moment it is ready, and the endpoint forwards each one as a
 line of JSON, so rows fill in as the agent works.
 
-The demo is public and every submission spends credits, so it stops itself. A
-daily budget is tracked in memory and refuses new work once the day's allowance
-is gone. That guards the actual risk -- an unbounded bill -- without putting
-anything between Jobnova and the demo.
+The demo is public and every submission spends credits, so two things guard the
+bill. An access key sent along with the link unlocks the part that costs money,
+and a daily budget refuses new work once the day's allowance is gone.
+
+The key is the useful one. The page itself stays readable by anyone, so the URL
+is never dead, but a crawler that finds the hostname cannot spend a credit. The
+budget behind it is a backstop for the key leaking rather than the defence
+itself, which is why it can stay generous: a cap tight enough to stop a stranger
+is also tight enough to be empty when Jobnova arrives.
+
+`DEMO_ACCESS_KEY` blank switches the gate off, which is what local development
+wants. Both settings are environment variables, so the key can be rotated and
+the budget raised for the day Jobnova tests without touching this file.
+
+When the budget does run out, one line goes to ntfy.sh -- a free relay that
+pushes to a phone subscribed to the topic -- so an empty budget is something you
+hear about rather than discover. It fires once a day, never more.
 
 The budget resets when the process restarts, which is fine for a demo on one
 instance and would need a real store if this ever ran on several.
@@ -41,10 +54,12 @@ would hold its own browser and its own copy of the daily budget below.
 
 from __future__ import annotations
 
+import hmac
 import json
 import re
 from datetime import date
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -52,8 +67,12 @@ from pydantic import BaseModel
 from job_source_agent import pipeline
 from job_source_agent.config import (
     CREDITS_PER_URL,
+    DEMO_ACCESS_KEY,
     DEMO_DAILY_CREDITS,
     DEMO_MAX_URLS,
+    NTFY_TIMEOUT,
+    NTFY_TOPIC,
+    NTFY_URL,
 )
 from job_source_agent.models import JobSourceResult
 
@@ -63,9 +82,21 @@ JOB_URL_RE = re.compile(r"linkedin\.com/jobs/view/\d+|[?&]currentJobId=\d+", re.
 
 
 class Submission(BaseModel):
-    """What the page posts: the raw contents of the textarea."""
+    """What the page posts: the raw contents of the textarea and the access key.
+
+    `key` defaults to empty so a request without one is a normal refusal rather
+    than a 422 from FastAPI, which would reach the page as an unreadable
+    validation error instead of the sentence explaining what is missing.
+    """
 
     urls: str
+    key: str = ""
+
+
+class KeyCheck(BaseModel):
+    """What the unlock box posts: just the key it wants tested."""
+
+    key: str = ""
 
 
 class Budget:
@@ -80,13 +111,24 @@ class Budget:
         self.daily = daily
         self.day = date.today()
         self.spent = 0
+        self.warned = False
 
     def _roll(self) -> None:
         """Start a new day's allowance if the date has changed. Called before
         every read so the budget never has to be reset by hand."""
         today = date.today()
         if today != self.day:
-            self.day, self.spent = today, 0
+            self.day, self.spent, self.warned = today, 0, False
+
+    def claim_warning(self) -> bool:
+        """Report whether this is the first refusal of the day, and record that
+        it happened. Returns True once per day and False every time after, so a
+        client retrying against an empty budget cannot send a hundred alerts."""
+        self._roll()
+        if self.warned:
+            return False
+        self.warned = True
+        return True
 
     @property
     def remaining(self) -> int:
@@ -106,6 +148,36 @@ class Budget:
 
 
 budget = Budget(DEMO_DAILY_CREDITS)
+
+
+def key_ok(supplied: str) -> bool:
+    """Report whether a submitted access key matches the configured one.
+    Returns True for everything when `DEMO_ACCESS_KEY` is blank, which is how
+    the gate is switched off for local development. `hmac.compare_digest`
+    compares the two strings in constant time, so a caller cannot learn the key
+    one character at a time by measuring how long each guess took."""
+    if not DEMO_ACCESS_KEY:
+        return True
+    return hmac.compare_digest(supplied.strip(), DEMO_ACCESS_KEY)
+
+
+async def notify(message: str) -> None:
+    """Push one line to whatever phone is subscribed to `NTFY_TOPIC`, and do
+    nothing at all if no topic is configured. Returns None and swallows every
+    error, because a notification service being unreachable must never take the
+    demo down with it; `async with` closes the HTTP client afterwards without
+    blocking the event loop while the request is in flight."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=NTFY_TIMEOUT) as client:
+            await client.post(
+                f"{NTFY_URL.rstrip('/')}/{NTFY_TOPIC}",
+                content=message.encode("utf-8"),
+                headers={"Title": "Job source agent", "Priority": "high"},
+            )
+    except Exception:
+        pass
 
 
 def parse_urls(raw: str) -> tuple[list[str], list[str]]:
@@ -158,25 +230,64 @@ async def stream(urls: list[str], rejected: list[str]):
     ) + "\n"
 
 
+@app.post("/api/check")
+async def check(body: KeyCheck) -> dict:
+    """Say whether an access key is the right one, without running anything.
+    Returns `{"ok": true}` or `{"ok": false}` so the unlock box can tell someone
+    their key is wrong straight away, rather than letting them paste ten URLs
+    and wait before finding out."""
+    return {"ok": key_ok(body.key)}
+
+
 @app.post("/api/resolve")
 async def resolve(submission: Submission) -> StreamingResponse:
     """Take the pasted URLs and stream a result for each one. Refuses before
-    spending anything when there is nothing valid to run, when more than
-    `DEMO_MAX_URLS` were given, or when the day's credit budget is gone."""
+    spending anything when the access key is wrong, when there is nothing valid
+    to run, when more than `DEMO_MAX_URLS` were given, or when the day's credit
+    budget is gone.
+
+    The key is checked here and not only on the page, because the page can be
+    skipped entirely -- anyone can post straight to this endpoint.
+    """
+
+    def refusal(message: str, status: int = 200, **extra) -> StreamingResponse:
+        body = json.dumps({"type": "error", "message": message, **extra})
+        return StreamingResponse(
+            iter([body + "\n"]),
+            media_type="application/x-ndjson",
+            status_code=status,
+        )
+
+    if not key_ok(submission.key):
+        return refusal(
+            "That access key is not right. Use the key that came with the link.",
+            status=401,
+            unauthorized=True,
+        )
+
     urls, rejected = parse_urls(submission.urls)
 
-    def refusal(message: str) -> StreamingResponse:
-        body = json.dumps({"type": "error", "message": message, "rejected": rejected})
-        return StreamingResponse(iter([body + "\n"]), media_type="application/x-ndjson")
-
     if not urls:
-        return refusal("No LinkedIn job URLs found. They look like linkedin.com/jobs/view/1234567890.")
+        return refusal(
+            "No LinkedIn job URLs found. They look like linkedin.com/jobs/view/1234567890.",
+            rejected=rejected,
+        )
     if len(urls) > DEMO_MAX_URLS:
-        return refusal(f"{len(urls)} URLs given; this demo takes up to {DEMO_MAX_URLS} at a time.")
+        return refusal(
+            f"{len(urls)} URLs given; this demo takes up to {DEMO_MAX_URLS} at a time.",
+            rejected=rejected,
+        )
     if not budget.take(len(urls) * CREDITS_PER_URL):
+        # Fires at most once a day. Someone retrying against an empty budget
+        # would otherwise send a notification per attempt.
+        if budget.claim_warning():
+            await notify(
+                f"Daily lookup budget spent. {budget.remaining} credits left, resets tomorrow."
+            )
         return refusal(
             f"The demo's daily lookup budget is spent ({budget.remaining} credits left). "
-            "It resets tomorrow."
+            "It resets tomorrow.",
+            rejected=rejected,
         )
 
     return StreamingResponse(stream(urls, rejected), media_type="application/x-ndjson")
@@ -184,16 +295,24 @@ async def resolve(submission: Submission) -> StreamingResponse:
 
 @app.get("/health")
 async def health() -> dict:
-    """Report that the app is up and how much budget is left. Fly uses this to
-    decide whether an instance is healthy."""
-    return {"ok": True, "credits_left": budget.remaining, "max_urls": DEMO_MAX_URLS}
+    """Report that the app is up, how much budget is left, and whether a key is
+    needed to spend it. Says only that a key is required, never what it is."""
+    return {
+        "ok": True,
+        "credits_left": budget.remaining,
+        "max_urls": DEMO_MAX_URLS,
+        "key_required": bool(DEMO_ACCESS_KEY),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
-    """Serve the single page. The HTML is inline rather than a static file so
-    the Docker image has one fewer thing to copy and get wrong."""
-    return PAGE
+    """Serve the single page, telling it whether the access gate applies. The
+    flag is substituted into the HTML rather than fetched by the page, so the
+    page never flickers between locked and unlocked while it works out which it
+    is; `str.replace` is used instead of an f-string because the page's CSS is
+    full of braces an f-string would try to read as fields."""
+    return PAGE.replace("__KEY_REQUIRED__", "true" if DEMO_ACCESS_KEY else "false")
 
 
 PAGE = """<!doctype html>
@@ -215,6 +334,8 @@ PAGE = """<!doctype html>
   textarea { width:100%; min-height:130px; padding:12px; border:1px solid var(--line); border-radius:8px;
              background:var(--card); color:inherit; font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; resize:vertical; }
   .row { display:flex; align-items:center; gap:12px; margin-top:12px; }
+  input { flex:1; max-width:300px; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+          background:var(--bg); color:inherit; font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
   button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; }
   button:disabled { opacity:.5; cursor:default; }
   .note { color:var(--muted); font-size:13px; }
@@ -242,21 +363,129 @@ PAGE = """<!doctype html>
   <h1>Job source agent</h1>
   <p class="sub">Paste LinkedIn job URLs, one per line. Each one is resolved to its company, then a browser agent walks that company's own site to its job listings.</p>
 
-  <textarea id="urls" placeholder="https://www.linkedin.com/jobs/view/4427628688/
+  <div id="gate" hidden>
+    <div class="card">
+      <h3>Access key</h3>
+      <p class="note">Every lookup spends real API credits, so this demo asks for the
+      key that came with the link.</p>
+      <div class="row">
+        <input id="key" type="password" placeholder="access key" autocomplete="off" spellcheck="false">
+        <button id="unlock">Unlock</button>
+      </div>
+      <p class="note" id="keyerr"></p>
+    </div>
+  </div>
+
+  <div id="demo" hidden>
+    <textarea id="urls" placeholder="https://www.linkedin.com/jobs/view/4427628688/
 https://www.linkedin.com/jobs/view/4456337928/"></textarea>
 
-  <div class="row">
-    <button id="go">Find job boards</button>
-    <span class="note" id="status">Up to 10 at a time. Around 10-30 seconds each.</span>
+    <div class="row">
+      <button id="go">Find job boards</button>
+      <span class="note" id="status">Up to 10 at a time. Around 10-30 seconds each.</span>
+    </div>
   </div>
 
   <div id="out"></div>
 </div>
 
 <script>
+// Substituted by index(). False when DEMO_ACCESS_KEY is unset, which is how the
+// gate stays out of the way during local development.
+const KEY_REQUIRED = __KEY_REQUIRED__;
+const STORE = 'jsa_access_key';
+
 const go = document.getElementById('go');
 const out = document.getElementById('out');
 const status = document.getElementById('status');
+const gate = document.getElementById('gate');
+const demo = document.getElementById('demo');
+const keyInput = document.getElementById('key');
+const keyErr = document.getElementById('keyerr');
+const unlock = document.getElementById('unlock');
+
+let accessKey = '';
+
+// localStorage throws outright in some privacy modes rather than returning
+// null, so every touch of it is wrapped. A demo that cannot remember a key is
+// mildly annoying; one that fails to load at all is broken.
+function readStored() {
+  try { return localStorage.getItem(STORE) || ''; } catch (e) { return ''; }
+}
+function writeStored(value) {
+  try {
+    if (value) { localStorage.setItem(STORE, value); } else { localStorage.removeItem(STORE); }
+  } catch (e) {}
+}
+
+function showDemo() { gate.hidden = true; demo.hidden = false; }
+
+function showGate(note) {
+  demo.hidden = true;
+  gate.hidden = false;
+  keyErr.textContent = note || '';
+  keyInput.focus();
+}
+
+async function verify(candidate) {
+  const res = await fetch('/api/check', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({key: candidate})
+  });
+  const data = await res.json();
+  return data.ok === true;
+}
+
+async function start() {
+  if (!KEY_REQUIRED) { showDemo(); return; }
+
+  // A key may ride in on the address bar, so one link is all Jobnova needs. It
+  // is wiped from the bar as soon as it is read, so a screenshot of the demo
+  // does not hand the key to whoever sees it.
+  const fromUrl = new URLSearchParams(location.search).get('key');
+  if (fromUrl) { history.replaceState(null, '', location.pathname); }
+
+  const candidate = (fromUrl || readStored()).trim();
+  if (!candidate) { showGate(''); return; }
+
+  let good = false;
+  try { good = await verify(candidate); } catch (e) { good = false; }
+
+  if (good) {
+    accessKey = candidate;
+    writeStored(candidate);
+    showDemo();
+  } else {
+    writeStored('');
+    showGate(fromUrl ? 'The key in that link is not right.' : '');
+  }
+}
+
+unlock.onclick = async () => {
+  const candidate = keyInput.value.trim();
+  if (!candidate) { keyErr.textContent = 'Enter the key that came with the link.'; return; }
+
+  unlock.disabled = true;
+  keyErr.textContent = 'checking...';
+  try {
+    if (await verify(candidate)) {
+      accessKey = candidate;
+      writeStored(candidate);
+      keyErr.textContent = '';
+      keyInput.value = '';
+      showDemo();
+    } else {
+      keyErr.textContent = 'That key is not right.';
+    }
+  } catch (e) {
+    keyErr.textContent = 'Could not reach the server.';
+  } finally {
+    unlock.disabled = false;
+  }
+};
+
+keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { unlock.click(); } });
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -306,7 +535,7 @@ go.onclick = async () => {
     const res = await fetch('/api/resolve', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls})
+      body: JSON.stringify({urls, key: accessKey})
     });
 
     const reader = res.body.getReader();
@@ -327,6 +556,11 @@ go.onclick = async () => {
         if (ev.type === 'error') {
           out.appendChild(message(ev.message, true));
           status.textContent = '';
+          if (ev.unauthorized) {
+            accessKey = '';
+            writeStored('');
+            showGate(ev.message);
+          }
         } else if (ev.type === 'start') {
           total = ev.count;
           if (ev.rejected && ev.rejected.length) {
@@ -349,6 +583,8 @@ go.onclick = async () => {
     go.disabled = false;
   }
 };
+
+start();
 </script>
 </body>
 </html>

@@ -66,6 +66,22 @@ DEMO_MAX_URLS = 10
 DEMO_DAILY_CREDITS = int(os.getenv("DEMO_DAILY_CREDITS", "5000"))
 CREDITS_PER_URL = 55
 
+# The page itself stays public -- anyone may read what the demo is and how it
+# works -- but the endpoint that spends money asks for a key first, so a link
+# found by a crawler cannot run up a bill. The key is sent to Jobnova alongside
+# the URL. Leaving this blank turns the gate off entirely, which is what local
+# development wants.
+DEMO_ACCESS_KEY = os.getenv("DEMO_ACCESS_KEY", "")
+
+# Where to push a one-line alert when the day's budget runs out. ntfy.sh is a
+# free relay with no account: anything posted to a topic arrives on every phone
+# subscribed to that topic. The topic name is the only thing keeping strangers
+# out, so make it long and random, and never put a key or a URL in a message.
+# Blank means no notification is sent.
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
+NTFY_URL = os.getenv("NTFY_URL", "https://ntfy.sh")
+NTFY_TIMEOUT = 10.0
+
 
 def require_anthropic_key() -> str:
     """Fail loudly and early rather than on a confusing 401 mid-run."""
