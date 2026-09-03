@@ -152,6 +152,90 @@ traceback mentions neither uvicorn nor the flag.
 
 ---
 
+## Where this falls short, and what I would do next
+
+Everything below is known rather than discovered later. Ordered roughly by how
+much it would change the result.
+
+**A job aggregator can still win.** Nothing currently tells the agent that
+LinkedIn, Indeed, Glassdoor and the rest are not the company's own site. In one
+run it walked from a company's homepage onto that company's LinkedIn page, which
+the arrival scorer rated 52 — correctly, in a sense, because a LinkedIn company
+page really does list jobs. It is the wrong answer under the brief, and slightly
+absurd given we started from a LinkedIn URL. The fix is a shared list of
+aggregator hosts, penalised hard in the link ranker so they never reach the
+model, and refused outright as a final answer. Small change, and the one I would
+make first.
+
+**Two companies stop one hop short.** CarMax and Reyes both land on a careers
+page that genuinely lists some jobs, scores well, and so ends the walk — while
+the full board is one click further on ("Explore all 216 jobs"). Arrival
+detection deliberately treats every signal as yes/no rather than as a quantity,
+so that a board with six jobs is not drowned by one with fifteen hundred. That
+choice is right in general and costs us here. A tiebreaker between two pages
+that both clear arrival, decided on how many jobs each actually lists, would
+recover both without reintroducing magnitude into the scoring itself.
+
+**It is slower than it should be.** Around twenty seconds per company, so ten
+URLs at two workers is roughly a hundred seconds. Almost none of that is the
+model — a hop costs about a thousand input tokens and returns sixty, which is
+well under a second. The time is browser time: launching a context, rendering,
+and waiting for a JavaScript page to stop changing. The honest ways to attack it
+are fewer hops, not faster inference — recognising a known job-board host and
+stopping immediately, remembering the answer for a company already resolved, and
+raising concurrency on hardware with the memory to support it. Renting the
+rendering from a browser service would remove the memory ceiling entirely at the
+cost of a per-page fee.
+
+**Measure what the model is actually buying.** The cheap ranker keeps a careers
+link in its top thirty on all twenty development companies, and ranks it first
+whenever the answer is one hop away. The model earns its place on ties the
+ranker cannot break — Honeywell's homepage has five links tied on score and the
+right answer sits sixth, in the footer, which the model reached past all five to
+find. But "it helps on ties" is an observation from a handful of cases, not a
+measurement. A mode that always takes the top-ranked link, run against the same
+benchmark, would say exactly what the model is worth. If the gap turns out to be
+small, dropping it removes an API dependency, a cost, and a source of
+non-determinism from the system. If the gap is large, that is worth knowing too.
+Either way it is a free experiment against data already on disk.
+
+**Validate the thresholds honestly.** Every cutoff in the arrival scorer was
+chosen by looking at the same twenty companies it is then judged on, which is
+fitting and grading on one exam. The fix is not more companies — a hundred
+hand-walked sites would have the identical problem at a larger scale. It is
+leave-one-out: pick the cutoffs from nineteen, test on the twentieth, repeat
+twenty times. Cutoffs that hold steady generalise; cutoffs that swing depending
+on which company is dropped were memorising. It runs against cached pages and
+costs nothing.
+
+**Collect better negatives, not more positives.** Nineteen of the twenty pages
+the scorer is asked to reject are company homepages, which are easy to beat. The
+genuinely hard case is a careers landing page with no jobs on it — AMETEK's, for
+instance — because that is exactly what the walk must refuse to stop on. More
+hand-collected examples of *listings* pages would add little. What would help is
+free: every intermediate page the agent walks through during a run is, by
+definition, a page that was not the answer, and saving them harvests exactly the
+kind of negative the set is short of.
+
+**The benchmark's scoring is too strict.** It compares normalised URLs exactly,
+which marks two verified-correct answers wrong: Honeywell's vanity domain in
+front of the same Oracle board, and an Ashby board that is arguably a better
+answer than the one recorded by hand. Loosening the comparison would hide real
+mistakes, so the better fix is an `also_accept` column in the ground truth —
+unmatched pairs get printed once for a human to check, and a verified equivalent
+is recorded and matches automatically thereafter. A loose matcher's errors are
+invisible and inflate the number; a strict matcher's errors are loud and cost a
+minute each.
+
+**The demo is one process holding state in memory.** The daily budget lives in a
+variable and resets when the app restarts, which is correct for one instance and
+wrong for several — each would get its own allowance. Anything beyond a single
+box needs that counter in a shared store, and the browser work moved behind a
+queue, which is the natural shape for it anyway: rendering is stateless and
+embarrassingly parallel.
+
+---
+
 ## Running it
 
 ```bash
@@ -168,6 +252,22 @@ uv run uvicorn job_source_agent.api:app     # no --reload on Windows
 
 Then open http://127.0.0.1:8000, paste up to 10 LinkedIn job URLs, and watch each
 row fill in as its walk finishes.
+
+**Guarding a public demo.** The deployed copy is a public URL and every lookup
+spends real money, so the part that costs anything asks for a key. Set
+`DEMO_ACCESS_KEY` in `.env` and the page still loads for anyone — they can read
+what the tool is — but the paste box is replaced by a short key field until the
+right key is entered. Sending the link as `…/?key=<key>` unlocks it in one step
+and then wipes the key from the address bar, so a screenshot does not leak it.
+
+The key is checked on the server, not just in the page, because the page can be
+skipped entirely by posting straight to `/api/resolve`. Leave `DEMO_ACCESS_KEY`
+blank and the gate is off, which is what you want locally.
+
+Behind it, `DEMO_DAILY_CREDITS` caps what can be spent in a day, and `NTFY_TOPIC`
+pushes one notification to your phone when that cap is reached — once per day,
+never more, and a failure to send is swallowed rather than allowed to take the
+demo down. See `.env.example` for all three.
 
 **One URL, end to end**
 
